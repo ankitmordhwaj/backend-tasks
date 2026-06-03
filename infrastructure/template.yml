@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  CSV processing stack — S3 upload trigger, Lambda processor,
+  IAM roles with CloudWatch Logs permissions, and deployment artifacts bucket.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: csv-processor
+    Description: Prefix used for resource names.
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Deployment environment label.
+
+  LambdaCodeS3Bucket:
+    Type: String
+    Description: S3 bucket that stores the packaged Lambda deployment artifact.
+
+  LambdaCodeS3Key:
+    Type: String
+    Default: lambda/csv-processor.zip
+    Description: S3 key for the Lambda deployment package zip file.
+
+  LambdaRuntime:
+    Type: String
+    Default: python3.12
+    AllowedValues:
+      - python3.11
+      - python3.12
+    Description: Python runtime for the Lambda function.
+
+  LambdaMemorySize:
+    Type: Number
+    Default: 256
+    MinValue: 128
+    MaxValue: 10240
+    Description: Lambda memory allocation in MB.
+
+  LambdaTimeout:
+    Type: Number
+    Default: 30
+    MinValue: 3
+    MaxValue: 900
+    Description: Lambda timeout in seconds.
+
+  LogRetentionInDays:
+    Type: Number
+    Default: 14
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+    Description: CloudWatch Logs retention period for the Lambda log group.
+
+Resources:
+  CsvUploadBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - CsvProcessorS3InvokePermission
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-uploads-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: .csv
+            Function: !GetAtt CsvProcessorFunction.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  CsvProcessedBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-processed-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  CsvProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-csv-processor"
+      RetentionInDays: !Ref LogRetentionInDays
+
+  CsvProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-csv-processor-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CsvProcessorS3Access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadUploadBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-${Environment}-uploads-${AWS::AccountId}/*"
+              - Sid: WriteProcessedBucket
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub "arn:aws:s3:::${ProjectName}-${Environment}-processed-${AWS::AccountId}/*"
+        - PolicyName: CsvProcessorCloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ManageLogGroup
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ProjectName}-${Environment}-csv-processor:*"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  CsvProcessorFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - CsvProcessorLogGroup
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-csv-processor"
+      Description: Parses CSV files uploaded to S3.
+      Runtime: !Ref LambdaRuntime
+      Handler: csv_processor.handler.lambda_handler
+      Role: !GetAtt CsvProcessorRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Code:
+        S3Bucket: !Ref LambdaCodeS3Bucket
+        S3Key: !Ref LambdaCodeS3Key
+      Environment:
+        Variables:
+          SOURCE_BUCKET: !Sub "${ProjectName}-${Environment}-uploads-${AWS::AccountId}"
+          PROCESSED_BUCKET: !Sub "${ProjectName}-${Environment}-processed-${AWS::AccountId}"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  CsvProcessorS3InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CsvProcessorFunction
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:aws:s3:::${ProjectName}-${Environment}-uploads-${AWS::AccountId}"
+
+Outputs:
+  UploadBucketName:
+    Description: S3 bucket for uploading CSV files.
+    Value: !Ref CsvUploadBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-UploadBucket"
+
+  ProcessedBucketName:
+    Description: S3 bucket where JSON summaries are written.
+    Value: !Ref CsvProcessedBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ProcessedBucket"
+
+  LambdaFunctionName:
+    Description: Name of the CSV processor Lambda function.
+    Value: !Ref CsvProcessorFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaFunction"
+
+  LambdaFunctionArn:
+    Description: ARN of the CSV processor Lambda function.
+    Value: !GetAtt CsvProcessorFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaFunctionArn"
+
+  LambdaLogGroupName:
+    Description: CloudWatch log group for Lambda execution logs.
+    Value: !Ref CsvProcessorLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}-LogGroup"
+
+  LambdaExecutionRoleArn:
+    Description: IAM role ARN used by the Lambda function.
+    Value: !GetAtt CsvProcessorRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-LambdaRoleArn"
