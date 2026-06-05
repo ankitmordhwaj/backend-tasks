@@ -16,7 +16,6 @@ env/
 .coverage
 pytest.ini
 htmlcov/
-tests/
 
 # IDE
 .idea/
@@ -33,5 +32,3 @@ packaged-template.yml
 # Secrets
 .env
 .env.*
-
-requirements-dev.txt
