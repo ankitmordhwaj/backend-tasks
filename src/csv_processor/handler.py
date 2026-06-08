@@ -176,17 +176,65 @@ def handle_s3_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """Main Lambda handler - supports both S3 events and API Gateway triggers."""
     try:
         logger.info("Received event: %s", json.dumps(event))
-        return handle_s3_event(event)
+        
+        # Check if it's an API Gateway event
+        if "httpMethod" in event and "body" in event:
+            logger.info("Processing API Gateway event")
+            
+            # Parse the request body
+            body = json.loads(event["body"]) if event["body"] else {}
+            bucket = body.get("bucket")
+            key = body.get("key")
+            
+            if not bucket or not key:
+                return {
+                    "statusCode": 400,
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({
+                        "error": "Missing required fields: 'bucket' and 'key'"
+                    })
+                }
+            
+            # Process the file
+            try:
+                result = process_s3_object(bucket, key)
+                return {
+                    "statusCode": 200,
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps(result)
+                }
+            except CSVProcessingError as e:
+                return {
+                    "statusCode": 400,
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({"error": str(e)})
+                }
+        
+        # Otherwise, treat as S3 event
+        else:
+            logger.info("Processing S3 event")
+            return handle_s3_event(event)
+            
     except Exception as e:
         logger.exception("Fatal error in lambda_handler")
-        return {
-            "processed_files": 0,
-            "failed_files": 0,
-            "results": [],
-            "errors": [{
-                "status": "fatal_error",
-                "error": f"Lambda handler failed: {str(e)}"
-            }]
-        }
+        
+        # Return appropriate format based on event type
+        if "httpMethod" in event:
+            return {
+                "statusCode": 500,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps({"error": f"Internal server error: {str(e)}"})
+            }
+        else:
+            return {
+                "processed_files": 0,
+                "failed_files": 0,
+                "results": [],
+                "errors": [{
+                    "status": "fatal_error",
+                    "error": f"Lambda handler failed: {str(e)}"
+                }]
+            }

@@ -25,9 +25,9 @@ cp -r "${ROOT_DIR}/src/csv_processor" "${PACKAGE_DIR}/"
   zip -r "${ZIP_PATH}" . -q
 )
 
-echo "==> Ensuring artifacts bucket exists: ${ARTIFACTS_BUCKET}"
+echo "==> Ensuring artifacts bucket exists: ${ARTIFACTS_BUCKET} (region: ${AWS_REGION})"
 if ! aws s3api head-bucket --bucket "${ARTIFACTS_BUCKET}" 2>/dev/null; then
-  if [[ "${AWS_REGION}" == "ap-south-1" ]]; then
+  if [[ "${AWS_REGION}" == "us-east-1" ]]; then
     aws s3api create-bucket --bucket "${ARTIFACTS_BUCKET}" --region "${AWS_REGION}"
   else
     aws s3api create-bucket --bucket "${ARTIFACTS_BUCKET}" --region "${AWS_REGION}" \
@@ -36,7 +36,7 @@ if ! aws s3api head-bucket --bucket "${ARTIFACTS_BUCKET}" 2>/dev/null; then
 fi
 
 echo "==> Uploading Lambda artifact to s3://${ARTIFACTS_BUCKET}/${LAMBDA_S3_KEY}"
-aws s3 cp "${ZIP_PATH}" "s3://${ARTIFACTS_BUCKET}/${LAMBDA_S3_KEY}"
+aws s3 cp "${ZIP_PATH}" "s3://${ARTIFACTS_BUCKET}/${LAMBDA_S3_KEY}" --region "${AWS_REGION}"
 
 echo "==> Deploying CloudFormation stack: ${STACK_NAME}"
 aws cloudformation deploy \

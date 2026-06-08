@@ -323,3 +323,83 @@ def test_handle_s3_event_url_encoded_key(mock_s3):
         Bucket="test-bucket", 
         Key="July Sales Report.csv"  # Decoded with actual space
     )
+
+
+# API Gateway trigger tests
+
+@patch("csv_processor.handler.s3_client")
+@patch("csv_processor.handler.PROCESSED_BUCKET", "test-processed-bucket")
+def test_lambda_handler_api_gateway_trigger(mock_s3):
+    """Test that Lambda can be triggered via API Gateway."""
+    mock_body = io.BytesIO(SAMPLE_CSV.encode("utf-8"))
+    mock_s3.get_object.return_value = {
+        "Body": mock_body,
+        "ContentLength": len(SAMPLE_CSV)
+    }
+    
+    # API Gateway event format
+    event = {
+        "httpMethod": "POST",
+        "body": json.dumps({
+            "bucket": "test-bucket",
+            "key": "test.csv"
+        })
+    }
+    
+    result = lambda_handler(event, None)
+    
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["status"] == "success"
+    assert body["row_count"] == 2
+    assert body["columns"] == ["name", "email"]
+
+
+@patch("csv_processor.handler.s3_client")
+def test_lambda_handler_api_gateway_missing_params(mock_s3):
+    """Test API Gateway trigger with missing parameters."""
+    event = {
+        "httpMethod": "POST",
+        "body": json.dumps({"bucket": "test-bucket"})  # Missing 'key'
+    }
+    
+    result = lambda_handler(event, None)
+    
+    assert result["statusCode"] == 400
+    body = json.loads(result["body"])
+    assert "error" in body
+
+
+@patch("csv_processor.handler.s3_client")
+def test_lambda_handler_api_gateway_processing_error(mock_s3):
+    """Test API Gateway trigger with processing error."""
+    error_response = {"Error": {"Code": "NoSuchKey", "Message": "Not found"}}
+    mock_s3.get_object.side_effect = ClientError(error_response, "GetObject")
+    
+    event = {
+        "httpMethod": "POST",
+        "body": json.dumps({
+            "bucket": "test-bucket",
+            "key": "nonexistent.csv"
+        })
+    }
+    
+    result = lambda_handler(event, None)
+    
+    assert result["statusCode"] == 400
+    body = json.loads(result["body"])
+    assert "error" in body
+    assert "not found" in body["error"].lower()
+
+
+def test_lambda_handler_routes_s3_event():
+    """Test that Lambda handler correctly routes S3 events."""
+    with patch("csv_processor.handler.handle_s3_event") as mock_handle:
+        mock_handle.return_value = {"processed_files": 1, "failed_files": 0, "results": [], "errors": []}
+        
+        event = {"Records": [{"s3": {"bucket": {"name": "test"}, "object": {"key": "test.csv"}}}]}
+        
+        result = lambda_handler(event, None)
+        
+        mock_handle.assert_called_once_with(event)
+        assert result["processed_files"] == 1

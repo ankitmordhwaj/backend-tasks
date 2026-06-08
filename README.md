@@ -1,22 +1,41 @@
 # CSV Processor Backend
 
-AWS backend for processing CSV files using **Lambda** and **S3**, deployed with **CloudFormation**.
+AWS backend for processing CSV files using **Lambda**, **S3**, and **API Gateway**, deployed with **CloudFormation**.
 
 ## Architecture
 
 ```
-  Upload *.csv ──►  ┌───────────────────┐     ┌──────────────────┐
-                    │   S3 Upload       │ ──► │ Lambda (trigger) │
-                    │   Bucket          │     └────────┬─────────┘
-                    └───────────────────┘              │
-                                                       ▼
-                                            ┌──────────────────┐
-                                            │ S3 Processed     │
-                                            │ (JSON summaries) │
-                                            └──────────────────┘
+┌─────────────────┐
+│   FastAPI       │──────┐
+│   (Your APIs)   │      │
+└─────────────────┘      │
+                         ▼
+                ┌─────────────────┐
+                │  API Gateway    │
+                │  POST /process  │
+                └────────┬────────┘
+                         │
+    Upload *.csv ──►     │     ┌──────────────────┐
+                   │     ▼     │                  │
+                   │  ┌────────▼───────┐          │
+                   │  │ Lambda         │          │
+                   └─►│ CSV Processor  │          │
+                      └────────┬───────┘          │
+                               │                  │
+                               ▼                  │
+                      ┌──────────────────┐        │
+                      │ S3 Processed     │        │
+                      │ (JSON summaries) │        │
+                      └──────────────────┘        │
+                                                  │
+                      S3 Event Trigger ───────────┘
 ```
 
-When a `.csv` file is uploaded to the upload bucket, Lambda reads it, parses rows/columns, and writes a JSON summary to the processed bucket.
+**Two ways to trigger Lambda:**
+1. **Automatic**: Upload CSV to S3 → Lambda auto-triggered via S3 event
+2. **Manual**: POST to API Gateway `/process` endpoint → Lambda processes specified file
+
+The Lambda streams CSV files, parses rows/columns with validation, and writes JSON summaries.
 
 ## Project structure
 
@@ -42,9 +61,45 @@ backend-assessment/
 |---|---|
 | `CsvUploadBucket` | Receives CSV uploads; triggers Lambda on `*.csv` |
 | `CsvProcessedBucket` | Stores JSON processing summaries |
-| `CsvProcessorFunction` | Python Lambda handler |
+| `CsvProcessorFunction` | Python Lambda handler (supports both S3 and API Gateway events) |
 | `CsvProcessorRole` | IAM role with S3 + CloudWatch Logs permissions |
 | `CsvProcessorLogGroup` | Explicit log group with configurable retention |
+| `CsvProcessorApi` | API Gateway REST API for manual Lambda invocation |
+| `ApiStage` | API Gateway deployment stage |
+
+### API Gateway Endpoint
+
+After deployment, you can manually trigger CSV processing via API Gateway:
+
+```bash
+# Get the API endpoint from CloudFormation outputs
+API_URL=$(aws cloudformation describe-stacks \
+  --stack-name csv-processor-dev \
+  --query 'Stacks[0].Outputs[?OutputKey==`ApiGatewayUrl`].OutputValue' \
+  --output text)
+
+# Trigger processing for a specific file
+curl -X POST "$API_URL" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "bucket": "csv-processor-dev-uploads-123456",
+    "key": "myfile.csv"
+  }'
+```
+
+**Response example:**
+```json
+{
+  "status": "success",
+  "row_count": 150,
+  "columns": ["name", "email", "age"],
+  "sample_rows": [...],
+  "source": {"bucket": "...", "key": "..."},
+  "output": {"bucket": "...", "key": "..."}
+}
+```
+
+**Use Case:** Your FastAPI application can call this API Gateway endpoint to manually trigger processing for uploaded files, or reprocess existing files.
 
 ### IAM permissions
 
